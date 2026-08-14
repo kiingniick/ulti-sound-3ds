@@ -1,0 +1,9 @@
+# devkitPro build outputs
+build/
+*.elf
+*.map
+
+# Compiled homebrew artifacts (regenerate with `make`)
+*.3dsx
+*.smdh
+*.cia
