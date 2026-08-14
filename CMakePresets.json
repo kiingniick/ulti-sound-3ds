@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "3ds",
+      "displayName": "Nintendo 3DS (devkitARM)",
+      "description": "Cross-compile the .3dsx with the devkitPro 3DS toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{DEVKITPRO}/cmake/3DS.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "3ds-make",
+      "inherits": "3ds",
+      "displayName": "Nintendo 3DS (Unix Makefiles)",
+      "description": "Same as '3ds' but using the Unix Makefiles generator",
+      "generator": "Unix Makefiles"
+    }
+  ],
+  "buildPresets": [
+    { "name": "3ds",      "configurePreset": "3ds" },
+    { "name": "3ds-make", "configurePreset": "3ds-make" }
+  ]
+}
