@@ -67,10 +67,20 @@ All decoders are **vendored** (header-only libs + faad2 in-tree) — nothing ext
 - **Default** (art + info), **Soundwaves** (oscilloscope), and an FFT **Spectrum** analyzer with peak-hold caps.
 - **Dark mode** for both screens, remembered across launches.
 
+### 🌐 Online art (Wi-Fi)
+- **Download album covers + artist pictures from the internet** — Settings → *Download art online* looks the now-playing album up and applies the cover art, plus the **artist's profile picture** (shown as a badge on the Now Playing cover).
+- **Compilations-aware** — point it at a `Compilations` folder and it fetches a cover for **each** album inside it, matched by that album's title; individual albums under `Compilations` are handled as compilations (cover only).
+- Uses [Deezer](https://developers.deezer.com/api)'s open API (no login/keys). *Note: Spotify's API needs OAuth credentials that can't be legally bundled into open homebrew, so Deezer — which serves both album covers **and** artist images without auth — is used instead.*
+
 ### 🔎 Get around fast
-- **Song search** across the *entire* SD card (software keyboard) — results become the play queue.
+- **Song search** across the *entire* SD card (software keyboard). Matches by **filename and by album/folder title**, so a `Compilations/<Album>/` can be found by its title — results become the play queue.
 - **Custom album art per folder** — highlight an image in a folder and press `A`, or pick any image on the card in Settings.
 - All preferences saved to `sdmc:/3ds/ulti-sound/settings.cfg`.
+
+> [!NOTE]
+> **Cleaner loud bass on headphones.** The DSP chain now runs the pre-amp and EQ boosts
+> through a soft-clip limiter with automatic EQ headroom, so heavy bass saturates
+> gracefully at full scale instead of clipping to a harsh square edge.
 
 ---
 
@@ -113,7 +123,7 @@ Selecting a song queues **every audio file in that folder**, so tracks auto-adva
 <details>
 <summary><b>⚙️ Settings tab</b></summary>
 
-D-Pad ▲/▼ moves between rows; ◄/► adjusts the selected row (theme, pre-amp, sound enhancement, stereo width, visualizer). `A` toggles/cycles choices, opens the **Equalizer** editor, or opens the **cover picker**. You can also tap the left/right side of a row.
+D-Pad ▲/▼ moves between rows; ◄/► adjusts the selected row (theme, pre-amp, sound enhancement, stereo width, visualizer). `A` toggles/cycles choices, opens the **Equalizer** editor, opens the **cover picker**, or triggers **Download art online**. You can also tap the left/right side of a row.
 
 **Equalizer editor:** D-Pad ◄/► selects a band, ▲/▼ changes gain, `L`/`R` step presets, or drag the sliders. `B` closes.
 
@@ -186,7 +196,8 @@ ffmpeg -i input.mp4 -vf scale=400:-2 -c:v mjpeg -q:v 5 -c:a aac output.mp4
 | **No audio at all** | Dump DSP firmware once (DSP1 → `sdmc:/3ds/dspfirm.cdc`), relaunch. |
 | **Video won't play / says convert** | Re-encode the video track to MJPEG (see above). |
 | **App not in Homebrew Launcher** | Ensure the `.3dsx` is on the SD card (e.g. `sd:/3ds/…`) and you booted HBL. |
-| **No cover art** | Add `cover.jpg`/`folder.jpg` to the folder, or set one in-app (`A` on an image, or Settings → cover picker). |
+| **No cover art** | Add `cover.jpg`/`folder.jpg` to the folder, set one in-app (`A` on an image / Settings → cover picker), or use **Settings → Download art online** over Wi-Fi. |
+| **Online art does nothing** | Needs an active Wi-Fi connection; the console must be associated to an access point. Matching depends on the folder being named after the album (and its parent after the artist). |
 
 ---
 
@@ -203,9 +214,11 @@ source/
   audio.c / audio.h   NDSP engine + decode thread + pre-amp + 5-band EQ + viz tap
   video.c / video.h   MJPEG player: AVI + MP4/MOV demux, JPEG→texture, synced audio
   covers.c / covers.h LRU cache of folder covers for the Cover Flow browser
+  net.c / net.h       tiny HTTP(S) client (httpc + sslc) with redirect following
+  online.c / online.h Deezer lookup → download + apply album cover + artist pic
   usdec.c             unified decoder (WAV/MP3/FLAC/OGG/AAC → stereo s16)
   aac.c / aac.h       AAC front-end (faad2 + minimp4 demux)
-  art.c / art.h       per-folder album art: decode + GPU texture upload
+  art.c / art.h       per-folder album art + artist picture: decode + GPU upload
   library.c           SD-card folder browsing + audio/video/image filters
   faad/               vendored faad2 AAC decoder sources
 scripts/              WSL/Docker build helpers
@@ -221,6 +234,7 @@ assets/               banner + source artwork
 - [nothings/stb](https://github.com/nothings/stb) — stb_vorbis, stb_image.
 - [lieff/minimp4](https://github.com/lieff/minimp4) — MP4/M4A demuxing.
 - [knik0/faad2](https://github.com/knik0/faad2) — AAC decoding.
+- [Deezer API](https://developers.deezer.com/api) — open album/artist artwork lookup.
 
 ## 📜 License
 

@@ -15,6 +15,8 @@
 #include "art.h"
 #include "video.h"
 #include "covers.h"
+#include "net.h"
+#include "online.h"
 
 #define SD_ROOT     "sdmc:/"
 #define CFG_DIR     "sdmc:/3ds/ulti-sound"
@@ -155,6 +157,13 @@ static void search_walk(AppState* app, const char* dir, const char* q, int depth
     DIR* d = opendir(dir);
     if (!d) return;
 
+    /* Name of the folder we're inside (its album/compilation title). If it
+     * matches the query, every track in it counts as a hit -- this is what
+     * makes searching a "Compilations" album by its title return its songs. */
+    char folderName[LIB_NAME_MAX];
+    basename_of(dir, folderName, sizeof(folderName));
+    bool folderMatches = stristr_(folderName, q) != NULL;
+
     struct dirent* e;
     while ((e = readdir(d)) != NULL) {
         if (app->srCount >= SEARCH_MAX_RESULTS || *budget <= 0) break;
@@ -175,7 +184,8 @@ static void search_walk(AppState* app, const char* dir, const char* q, int depth
             char sub[LIB_PATH_MAX];
             snprintf(sub, sizeof(sub), "%s/", child);
             search_walk(app, sub, q, depth + 1, budget);
-        } else if (decoder_is_supported(e->d_name) && stristr_(e->d_name, q)) {
+        } else if (decoder_is_supported(e->d_name) &&
+                   (stristr_(e->d_name, q) || folderMatches)) {
             search_add(app, child, e->d_name);
         }
     }
@@ -515,8 +525,84 @@ static void settings_adjust(AppState* app, int row, int delta) {
     }
 }
 
+/* --------------------- online album / artist art --------------------- */
+
+static bool str_ieq(const char* a, const char* b) {
+    for (; *a && *b; ++a, ++b)
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+    return *a == 0 && *b == 0;
+}
+
+/* Parent directory of a folder path (keeps a trailing slash). */
+static void parent_of(const char* folder, char* out, size_t n) {
+    char tmp[LIB_PATH_MAX];
+    strncpy(tmp, folder, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = 0;
+    size_t len = strlen(tmp);
+    if (len && tmp[len - 1] == '/') tmp[--len] = 0;   /* drop trailing slash */
+    char* slash = strrchr(tmp, '/');
+    if (slash) slash[1] = 0; else tmp[0] = 0;
+    strncpy(out, tmp, n - 1);
+    out[n - 1] = 0;
+}
+
+/* Fetch cover (+ artist picture when it's not a compilation) for one folder. */
+static OnlineResult online_one(const char* folder) {
+    char album[LIB_NAME_MAX];
+    basename_of(folder, album, sizeof(album));
+
+    char parent[LIB_PATH_MAX];
+    parent_of(folder, parent, sizeof(parent));
+    char artist[LIB_NAME_MAX];
+    basename_of(parent, artist, sizeof(artist));
+
+    bool comp = str_ieq(artist, "Compilations");
+    return online_fetch_art(folder, comp ? NULL : artist, album, !comp);
+}
+
+static void download_online_art(AppState* app) {
+    if (!net_available()) { set_status(app, "No Wi-Fi connection"); return; }
+
+    const char* folder = app->npFolder[0] ? app->npFolder : app->lib.path;
+    char base[LIB_NAME_MAX];
+    basename_of(folder, base, sizeof(base));
+
+    set_status(app, "Downloading art...");
+    ui_render(app);   /* best-effort: flush the status before we block */
+
+    /* If pointed at the "Compilations" container itself, do each album inside
+     * it, matching every child folder by its own title. */
+    if (str_ieq(base, "Compilations")) {
+        DIR* d = opendir(folder);
+        int ok = 0, total = 0;
+        if (d) {
+            struct dirent* e;
+            while ((e = readdir(d)) != NULL) {
+                if (e->d_name[0] == '.') continue;
+                char sub[LIB_PATH_MAX];
+                snprintf(sub, sizeof(sub), "%s%s", folder, e->d_name);
+                struct stat st;
+                if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+                char subf[LIB_PATH_MAX];
+                snprintf(subf, sizeof(subf), "%s/", sub);
+                ++total;
+                if (online_fetch_art(subf, NULL, e->d_name, false) == ONLINE_OK) ++ok;
+            }
+            closedir(d);
+        }
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Compilations: %d/%d covers", ok, total);
+        set_status(app, msg);
+        return;
+    }
+
+    OnlineResult r = online_one(folder);
+    set_status(app, online_result_str(r));
+}
+
 static void settings_activate(AppState* app, int row) {
     if (row == SET_COVER)       open_picker(app);
+    else if (row == SET_ONLINE_ART) download_online_art(app);
     else if (row == SET_EQ)     { app->eqActive = true; app->eqBand = 0; }
     else if (row == SET_THEME)  set_theme(app, !app->darkMode);
     else if (row == SET_EFFECT || row == SET_VIZ) settings_adjust(app, row, +1);
@@ -613,7 +699,8 @@ int main(int argc, char** argv) {
     art_init();
     covers_init();
     video_init();
-    if (!audio_init()) { video_exit(); covers_exit(); art_exit(); ui_exit(); return 1; }
+    net_init();   /* HTTP client for online album/artist art (harmless if offline) */
+    if (!audio_init()) { net_exit(); video_exit(); covers_exit(); art_exit(); ui_exit(); return 1; }
 
     settings_load(&app);
 
@@ -818,7 +905,8 @@ int main(int argc, char** argv) {
                             int dir = ui_touch_dir(t.px);
                             bool slider = (row == SET_PREAMP || row == SET_WIDTH);
                             if (slider) { if (dir != 0) settings_adjust(&app, row, dir); }
-                            else if (row == SET_COVER || row == SET_EQ) settings_activate(&app, row);
+                            else if (row == SET_COVER || row == SET_EQ || row == SET_ONLINE_ART)
+                                settings_activate(&app, row);
                             else settings_adjust(&app, row, dir != 0 ? dir : +1); /* theme/effect/viz */
                         }
                     }
@@ -860,6 +948,7 @@ int main(int argc, char** argv) {
     library_free(&app.lib);
     library_free(&app.vlib);
     library_free(&app.plib);
+    net_exit();
     video_exit();
     covers_exit();
     audio_exit();

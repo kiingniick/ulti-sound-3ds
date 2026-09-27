@@ -638,6 +638,9 @@ static void settings_row_info(AppState* app, int row, char* label, char* value,
         case SET_COVER:
             strcpy(label, "Set album cover from SD image");
             *isChevron = true; break;
+        case SET_ONLINE_ART:
+            strcpy(label, "Download art online (Wi-Fi)");
+            *isChevron = true; break;
         default: label[0] = 0; break;
     }
 }
@@ -932,6 +935,13 @@ static void render_np_default(AppState* app) {
     if (!art_draw(ax, ay, asz)) {
         C2D_DrawRectSolid(ax, ay, 0.0f, asz, asz, clrArtBg);
         draw_note_icon(ax + asz / 2.0f, ay + asz / 2.0f - 6, 1.5f, clrArtBorder);
+    }
+
+    /* artist picture badge in the cover's lower-right corner (if downloaded) */
+    if (art_artist_available()) {
+        float av = 42, avx = ax + asz - av + 4, avy = ay + asz - av + 4;
+        C2D_DrawRectSolid(avx - 3, avy - 3, 0.0f, av + 6, av + 6, clrWhite);
+        art_draw_artist(avx, avy, av);
     }
 
     /* track info */

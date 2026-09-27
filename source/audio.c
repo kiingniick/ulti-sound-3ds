@@ -75,6 +75,7 @@ typedef struct {
     int    eqGain[EQ_BANDS];  /* -12..+12 dB per band */
     int    width;          /* 0..100 (50 = normal, <50 narrower, >50 wider) */
     BiQuad eq[EQ_BANDS];
+    float  eqMakeup;       /* auto headroom so EQ boosts don't slam 0 dBFS */
     volatile bool effDirty;
 
     /* ---- visualizer sample tap ---- */
@@ -92,14 +93,29 @@ typedef struct {
 static Audio g;
 
 static void apply_volume_locked(void) {
-    /* Pre-amp multiplies the volume; values >100% amplify (may clip loudly). */
-    float v = ((float)g.volume / 100.0f) * ((float)g.preamp / 100.0f);
+    /* Only the 0..100 volume goes to the hardware mix (always <= 1.0, so NDSP
+     * never hard-clips). Pre-amp gain is applied in process_block() where it
+     * passes through a soft-clip limiter, so boosting quiet tracks (or bass)
+     * saturates gracefully instead of clipping harshly on headphones. */
+    float v = (float)g.volume / 100.0f;
     if (v < 0.0f) v = 0.0f;
-    if (v > 4.0f) v = 4.0f;
+    if (v > 1.0f) v = 1.0f;
     for (int i = 0; i < 12; ++i) g.mix[i] = 0.0f;
     g.mix[0] = v; /* front left  */
     g.mix[1] = v; /* front right */
     ndspChnSetMix(NDSP_CHANNEL, g.mix);
+}
+
+/* Soft-clip limiter: transparent below the knee, then eases transients (bass
+ * especially) up to full scale instead of clipping to a hard square edge.
+ * |x| <= 0.8 is untouched; [0.8 .. 1.5] is compressed onto [0.8 .. 1.0]. */
+static inline float soft_clip(float x) {
+    float a = x < 0.0f ? -x : x;
+    if (a <= 0.8f)  return x;
+    if (a >= 1.5f)  return x < 0.0f ? -1.0f : 1.0f;
+    float e = (a - 0.8f) / 0.7f;              /* 0..1 across the knee */
+    float comp = 0.8f + 0.2f * (e * (2.0f - e)); /* quadratic ease-out to 1.0 */
+    return x < 0.0f ? -comp : comp;
 }
 
 /* ---- audio enhancement presets (5-band graphic EQ gains + stereo width) ---- */
@@ -120,8 +136,14 @@ static const EffPreset kPresets[] = {
 
 static void recompute_effects_locked(void) {
     float fs = g.sampleRate ? (float)g.sampleRate : 44100.0f;
-    for (int i = 0; i < EQ_BANDS; ++i)
+    int maxBoost = 0;
+    for (int i = 0; i < EQ_BANDS; ++i) {
         bq_peaking(&g.eq[i], fs, kEqFreq[i], (float)g.eqGain[i], 1.1f);
+        if (g.eqGain[i] > maxBoost) maxBoost = g.eqGain[i];
+    }
+    /* Pre-attenuate by ~60% of the largest boost so a bass lift has somewhere
+     * to go before the limiter, keeping boosted low end clean on headphones. */
+    g.eqMakeup = powf(10.0f, (-0.6f * (float)maxBoost) / 20.0f);
     g.effDirty = false;
 }
 
@@ -132,32 +154,39 @@ static bool effects_bypassed(void) {
     return true;
 }
 
-/* In-place multiband EQ + mid/side stereo width on interleaved s16. */
-static void apply_effects(int16_t* pcm, size_t frames) {
-    if (effects_bypassed()) return;
+/* In-place DSP: multiband EQ + stereo width + pre-amp gain, all finished with
+ * a soft-clip limiter so boosted bass / loud pre-amp never clips to a hard
+ * square wave (which is what produced the audible clipping on headphones). */
+static void process_block(int16_t* pcm, size_t frames) {
+    bool  eqOn   = !effects_bypassed();
+    float pre    = (float)g.preamp / 100.0f;
+    bool  gainOn = (pre < 0.999f || pre > 1.001f);
+    if (!eqOn && !gainOn) return;              /* clean path, nothing to do */
+
     if (g.effDirty) recompute_effects_locked();
     float sideGain = (float)g.width / 50.0f;   /* 0..2 */
+    float total    = pre * (eqOn ? g.eqMakeup : 1.0f);
 
     for (size_t i = 0; i < frames; ++i) {
         float l = pcm[2 * i]     / 32768.0f;
         float r = pcm[2 * i + 1] / 32768.0f;
 
-        for (int b = 0; b < EQ_BANDS; ++b) {
-            l = bq_proc(&g.eq[b], 0, l);
-            r = bq_proc(&g.eq[b], 1, r);
+        if (eqOn) {
+            for (int b = 0; b < EQ_BANDS; ++b) {
+                l = bq_proc(&g.eq[b], 0, l);
+                r = bq_proc(&g.eq[b], 1, r);
+            }
+            if (sideGain != 1.0f) {
+                float mid  = (l + r) * 0.5f;
+                float side = (l - r) * 0.5f * sideGain;
+                l = mid + side;
+                r = mid - side;
+            }
         }
 
-        if (sideGain != 1.0f) {
-            float mid  = (l + r) * 0.5f;
-            float side = (l - r) * 0.5f * sideGain;
-            l = mid + side;
-            r = mid - side;
-        }
+        l = soft_clip(l * total);
+        r = soft_clip(r * total);
 
-        if (l >  1.0f) l =  1.0f;
-        if (l < -1.0f) l = -1.0f;
-        if (r >  1.0f) r =  1.0f;
-        if (r < -1.0f) r = -1.0f;
         pcm[2 * i]     = (int16_t)(l * 32767.0f);
         pcm[2 * i + 1] = (int16_t)(r * 32767.0f);
     }
@@ -201,7 +230,7 @@ static void pump_locked(void) {
             g.decoderEnded = true;
             continue;
         }
-        apply_effects(dst, got);
+        process_block(dst, got);
         viz_capture(dst, got);
         g.wbuf[i].nsamples = (u32)got;
         DSP_FlushDataCache(dst, got * 2 * sizeof(int16_t));
@@ -285,6 +314,7 @@ bool audio_init(void) {
     g.effPreset = 0;
     g.width = 50;
     for (int i = 0; i < EQ_BANDS; ++i) { g.eqGain[i] = 0; bq_identity(&g.eq[i]); }
+    g.eqMakeup = 1.0f;
     g.effDirty = true;
 
     if (R_FAILED(ndspInit())) return false;

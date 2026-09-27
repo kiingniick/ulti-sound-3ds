@@ -34,6 +34,7 @@ typedef enum {
     SET_WIDTH,
     SET_VIZ,
     SET_COVER,
+    SET_ONLINE_ART,
     SET_COUNT
 } SettingRow;
 
