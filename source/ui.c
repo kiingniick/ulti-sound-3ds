@@ -841,16 +841,40 @@ static void fft(float* re, float* im, int n) {
 #define SPEC_N    512
 #define SPEC_BARS 28
 
+/* Precomputed, frame-invariant spectrum tables (Hann window + log bin edges).
+ * These used to be recomputed every frame (512 cosf + 56 powf @ 60 fps); now
+ * they're built once on first use. */
+static float s_hann[SPEC_N];
+static int   s_binLo[SPEC_BARS], s_binHi[SPEC_BARS];
+static bool  s_specInit = false;
+
+static void spec_tables_init(void) {
+    for (int i = 0; i < SPEC_N; ++i)
+        s_hann[i] = 0.5f - 0.5f * cosf(2.0f * 3.14159265358979f * i / (SPEC_N - 1));
+    int lo = 1, hi = SPEC_N / 2;
+    for (int b = 0; b < SPEC_BARS; ++b) {
+        float f0 = (float)lo * powf((float)hi / lo, (float)b / SPEC_BARS);
+        float f1 = (float)lo * powf((float)hi / lo, (float)(b + 1) / SPEC_BARS);
+        int k0 = (int)f0, k1 = (int)f1;
+        if (k1 <= k0) k1 = k0 + 1;
+        if (k1 > hi)  k1 = hi;
+        s_binLo[b] = k0;
+        s_binHi[b] = k1;
+    }
+    s_specInit = true;
+}
+
 static void render_np_spectrum(AppState* app) {
     static float re[SPEC_N], im[SPEC_N];
     static float bars[SPEC_BARS] = { 0 };
     static float peaks[SPEC_BARS] = { 0 };
 
+    if (!s_specInit) spec_tables_init();
+
     int n = audio_get_wave(re, SPEC_N);
     for (int i = n; i < SPEC_N; ++i) re[i] = 0.0f;
     for (int i = 0; i < SPEC_N; ++i) {
-        float w = 0.5f - 0.5f * cosf(2.0f * 3.14159265358979f * i / (SPEC_N - 1));
-        re[i] *= w;
+        re[i] *= s_hann[i];
         im[i]  = 0.0f;
     }
     fft(re, im, SPEC_N);
@@ -862,14 +886,8 @@ static void render_np_spectrum(AppState* app) {
     float gap   = 3.0f;
     float bw    = (areaW - gap * (SPEC_BARS - 1)) / SPEC_BARS;
 
-    /* log-spaced frequency bins across the lower half of the spectrum */
-    int lo = 1, hi = SPEC_N / 2;
     for (int bIdx = 0; bIdx < SPEC_BARS; ++bIdx) {
-        float f0 = (float)lo * powf((float)hi / lo, (float)bIdx / SPEC_BARS);
-        float f1 = (float)lo * powf((float)hi / lo, (float)(bIdx + 1) / SPEC_BARS);
-        int   k0 = (int)f0, k1 = (int)f1;
-        if (k1 <= k0) k1 = k0 + 1;
-        if (k1 > hi) k1 = hi;
+        int k0 = s_binLo[bIdx], k1 = s_binHi[bIdx];
         float mag = 0.0f;
         for (int k = k0; k < k1; ++k) {
             float m = sqrtf(re[k] * re[k] + im[k] * im[k]);

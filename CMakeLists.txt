@@ -61,7 +61,11 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     PACKAGE_VERSION="2.11.1")   # faad2 expects its package version defined
 
 target_compile_options(${PROJECT_NAME} PRIVATE
-    -Wall -O2 -mword-relocations -ffunction-sections)
+    -Wall -O2 -mword-relocations -ffunction-sections -fdata-sections)
+
+# Drop unused functions/data at link time (pairs with -f*-sections above) to
+# shrink the .3dsx. Harmless if a section is actually referenced.
+target_link_options(${PROJECT_NAME} PRIVATE -Wl,--gc-sections)
 
 target_link_directories(${PROJECT_NAME} PRIVATE "$ENV{DEVKITPRO}/libctru/lib")
 target_link_libraries(${PROJECT_NAME} citro2d citro3d ctru m)

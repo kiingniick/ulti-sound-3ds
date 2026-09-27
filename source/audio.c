@@ -295,15 +295,19 @@ static void audio_thread(void* arg) {
     while (g.threadRun) {
         handle_open_request();
 
+        bool playing = false;
         LightLock_Lock(&g.lock);
         if (g.state == AUDIO_PLAYING) {
+            playing = true;
             pump_locked();
             if (g.finished && !g.finishedLatch) {
                 g.finishedLatch = true;
             }
         }
         LightLock_Unlock(&g.lock);
-        svcSleepThread(5 * 1000 * 1000); /* 5 ms */
+        /* Poll fast while playing so wave buffers refill on time; idle far more
+         * cheaply when paused/stopped to cut wakeups and save battery. */
+        svcSleepThread((playing ? 5 : 20) * 1000 * 1000);
     }
 }
 
